@@ -11,6 +11,7 @@ import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.item.EntityMinecart;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.inventory.Container;
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.EnumFacing;
@@ -19,6 +20,7 @@ import net.minecraft.util.math.AxisAlignedBB;
 import net.minecraft.util.math.BlockPos;
 import net.minecraftforge.common.capabilities.Capability;
 import net.minecraftforge.items.CapabilityItemHandler;
+import net.minecraftforge.items.IItemHandler;
 
 import org.apache.commons.lang3.Validate;
 import org.apache.commons.lang3.tuple.ImmutablePair;
@@ -35,26 +37,59 @@ import com.minemaarten.signals.rail.RailManager;
 import com.minemaarten.signals.rail.network.mc.RailNetworkManager;
 import com.minemaarten.signals.tileentity.carthopperbehaviour.CartHopperBehaviourItems;
 
-public class TileEntityCartHopper extends TileEntityBase implements ITickable, IGUIButtonSensitive, ICartHopper{
+public class TileEntityCartHopper extends TileEntityBase implements ITickable, IGUIButtonSensitive, ICartHopper, 
+	IItemHandler, IGUITextFieldSensitive {
+    
+    public enum TextFieldIds{
+        MAX_ITEM_TRANSFER_INACTIVITY(0),
+        MINIMUM_CART_WAIT_TIME(1),
+        ;
+        
+        private final int index;
+        
+        private TextFieldIds(final int index) {
+            this.index = index;
+        }
+        
+        public int getIndex() {
+            return index;
+        }
+    }
 
     @GuiSynced
     private HopperMode hopperMode = HopperMode.CART_FULL;
+    /**
+     * When true, the Cart Engine capability will be filled/emptied instead.
+     */
     @GuiSynced
-    private boolean interactEngine; //When true, the Cart Engine capability will be filled/emptied instead.
-    private EnumFacing pushDir = EnumFacing.NORTH; //The direction the cart is pushed in when activated.
+    private boolean interactEngine;
+    /**
+     * The direction the cart is pushed in when activated.
+     */
+    private EnumFacing pushDir = EnumFacing.NORTH;
     private EntityMinecart managingCart;
     private UUID managingCartId;
     private boolean pushedLastTick;
     private int lastComparatorInputOverride;
     private boolean firstTick = true;
     private boolean extract;
-
+    private long lastActivityAt = 0;
+    @GuiSynced
+    private int maximumItemTransferInactivityTime = 0;
+    private long cartArrivedAt = 0;
+    @GuiSynced
+    private int minimumCartWaitTime = 0;
+    
     @Override
     public NBTTagCompound writeToNBT(NBTTagCompound tag){
         tag.setByte("hopperMode", (byte)hopperMode.ordinal());
         tag.setBoolean("interactEngine", interactEngine);
         tag.setByte("pushDir", (byte)pushDir.ordinal());
         tag.setBoolean("pushedLastTick", pushedLastTick);
+        tag.setBoolean("lastActivityAt", lastActivityAt > 0);
+        tag.setBoolean("cartArrivedAt", cartArrivedAt > 0);
+        tag.setInteger("maxInactivity", maximumItemTransferInactivityTime);
+        tag.setInteger("minimumCartWaitTime", minimumCartWaitTime);
         return super.writeToNBT(tag);
     }
 
@@ -65,6 +100,10 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
         interactEngine = tag.getBoolean("interactEngine");
         pushDir = EnumFacing.VALUES[tag.getByte("pushDir")];
         pushedLastTick = tag.getBoolean("pushedLastTick");
+        lastActivityAt = tag.getBoolean("lastActivityAt") ? System.currentTimeMillis() : 0;
+        cartArrivedAt = tag.getBoolean("cartArrivedAt") ? System.currentTimeMillis() : 0; 
+        maximumItemTransferInactivityTime = tag.getInteger("maxInactivity");
+        minimumCartWaitTime = tag.getInteger("minimumCartWaitTime");
     }
 
     public void updateCartAbove(){
@@ -104,6 +143,7 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
                 }
             } else {
                 shouldPush = false;
+                lastActivityAt = 0;
             }
             if(shouldPush && !pushedLastTick) pushCart();
             boolean notifyNeighbors = shouldPush != pushedLastTick;
@@ -165,7 +205,7 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
             if(filter != null) filters.add(new ImmutablePair<>(filter, dir));
         }
 
-        for(ICartHopperBehaviour hopperBehaviour : getApplicableHopperBehaviours(managingCart)) {
+        for(ICartHopperBehaviour hopperBehaviour : getApplicableHopperBehaviours()) {
             Capability<?> cap = hopperBehaviour.getCapability();
             Object cart = null;
             if(interactEngine && hopperBehaviour instanceof CartHopperBehaviourItems) {
@@ -182,10 +222,12 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
             if(hopperMode == HopperMode.CART_EMPTY && hopperBehaviour.isCartEmpty(cart, filters)) empty = true;
             if(hopperMode == HopperMode.CART_FULL && hopperBehaviour.isCartFull(cart)) full = true;
         }
-        return hopperMode == HopperMode.NO_ACTIVITY ? !active : empty || full;
+        return hopperMode == HopperMode.NO_ACTIVITY 
+                ? !active && cartCanLeaveByTime() && cartCanLeaveByExternalItemTransfer() 
+                : empty || full;
     }
 
-    private List<ICartHopperBehaviour<?>> getApplicableHopperBehaviours(EntityMinecart cart){
+    private List<ICartHopperBehaviour<?>> getApplicableHopperBehaviours(){
         Stream<ICartHopperBehaviour<?>> behaviours = RailManager.getInstance().getHopperBehaviours().stream();
         behaviours = behaviours.filter(hopperBehaviour -> interactEngine && hopperBehaviour instanceof CartHopperBehaviourItems || managingCart.hasCapability(hopperBehaviour.getCapability(), null));
         return behaviours.collect(Collectors.toList());
@@ -195,6 +237,7 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
         if(managingCart != null) {
             if(managingCart.isDead || !managingCart.getEntityBoundingBox().intersects(aabb)) {
                 managingCart = null;
+                cartArrivedAt = 0;
             }
         }
         if(managingCart == null) {
@@ -202,6 +245,7 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
             if(!carts.isEmpty()) {
                 managingCart = carts.get(0);
                 pushDir = managingCart.getAdjustedHorizontalFacing();
+                cartArrivedAt = System.currentTimeMillis();
             }
         }
     }
@@ -221,7 +265,10 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
             case 1:
                 interactEngine = !interactEngine;
                 break;
+            default:
+                return;
         }
+        markDirty();
     }
 
     @Override
@@ -236,15 +283,9 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
     @Override
     @Nullable
     public <T> T getCapability(Capability<T> capability, @Nullable EnumFacing facing){
-        if(managingCart != null && capability == CapabilityItemHandler.ITEM_HANDLER_CAPABILITY) {
-            if(interactEngine) {
-                CapabilityMinecartDestination destCap = managingCart.getCapability(CapabilityMinecartDestination.INSTANCE, null);
-                if(destCap != null) return (T)destCap.getEngineItemHandler();
-            } else if(managingCart.hasCapability(capability, null)) {
-                return managingCart.getCapability(capability, null);
-            }
-        }
-        return super.getCapability(capability, facing);
+      if (capability == CapabilityItemHandler.ITEM_HANDLER_CAPABILITY)
+          return (T)this;
+      return super.getCapability(capability, facing);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -259,7 +300,7 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
                 }
             } else {
                 int comparatorValue = 0;
-                for(ICartHopperBehaviour hopperBehaviour : getApplicableHopperBehaviours(managingCart)) {
+                for(ICartHopperBehaviour hopperBehaviour : getApplicableHopperBehaviours()) {
                     Capability<?> cap = hopperBehaviour.getCapability();
                     Object capabilityValue = managingCart.getCapability(cap, null);
                     if(capabilityValue != null) {
@@ -271,5 +312,115 @@ public class TileEntityCartHopper extends TileEntityBase implements ITickable, I
             }
         }
         return 0;
+    }
+    
+    private boolean cartCanLeaveByTime(){
+        return cartArrivedAt == 0 || cartArrivedAt + minimumCartWaitTime < System.currentTimeMillis();
+    }
+    
+    private boolean cartCanLeaveByExternalItemTransfer() {
+        return lastActivityAt == 0 || lastActivityAt + maximumItemTransferInactivityTime < System.currentTimeMillis();
+    }    
+
+    private IItemHandler getCartItemHandler(){
+        if (managingCart != null) {
+            if (interactEngine) {
+                CapabilityMinecartDestination destCap = managingCart
+                        .getCapability(CapabilityMinecartDestination.INSTANCE, null);
+                if (destCap != null)
+                    return destCap.getEngineItemHandler();
+            } else {
+                return managingCart.getCapability(CapabilityItemHandler.ITEM_HANDLER_CAPABILITY,
+                        extract ? EnumFacing.DOWN : EnumFacing.UP);
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public int getSlots(){
+        IItemHandler handler = getCartItemHandler();
+        if (handler == null)
+            return 0;
+        return handler.getSlots();
+    }
+
+    @Override
+    public ItemStack getStackInSlot(int slot){
+        IItemHandler handler = getCartItemHandler();
+        if (handler == null)
+            return ItemStack.EMPTY;
+        return handler.getStackInSlot(slot);
+    }
+
+    @Override
+    public ItemStack insertItem(int slot, ItemStack stack, boolean simulate){
+        IItemHandler handler = getCartItemHandler();
+        if (handler == null)
+            return stack;
+        ItemStack leftOver = handler.insertItem(slot, stack, simulate);
+        if (!simulate && !ItemStack.areItemStacksEqual(leftOver, stack))
+            lastActivityAt = System.currentTimeMillis();
+        return leftOver;
+    }
+
+    @Override
+    public ItemStack extractItem(int slot, int amount, boolean simulate){
+        IItemHandler handler = getCartItemHandler();
+        if (handler == null) 
+            return ItemStack.EMPTY;
+        ItemStack extracted =  handler.extractItem(slot, amount, simulate);
+        if (!simulate && !extracted.isEmpty() && extracted.getCount() > 0)
+            lastActivityAt = System.currentTimeMillis();
+        return extracted;
+    }
+
+    @Override
+    public int getSlotLimit(int slot){
+        IItemHandler handler = getCartItemHandler();
+        if (handler == null)
+            return 0;
+        return handler.getSlotLimit(slot);
+    }
+    
+    public int getMinimumCartWaitTime(){
+        return minimumCartWaitTime;
+    }
+    
+    public void setMinimumCartWaitTime(int value){
+        if (value < 0) value = 0;
+        if (minimumCartWaitTime != value) {
+            minimumCartWaitTime = value;
+            markDirty();
+        }
+    }
+    
+    public int getMaximumItemTransferInactivityTime(){
+        return maximumItemTransferInactivityTime;
+    }
+    
+    public void setMaximumItemTransferInactivityTime(int value){
+        if (value < 0) value = 0;
+        if (maximumItemTransferInactivityTime != value) {
+            maximumItemTransferInactivityTime = value;
+            markDirty();
+        }
+    }
+
+    @Override
+    public void setText(int textFieldID, String text){
+        if (textFieldID == TextFieldIds.MAX_ITEM_TRANSFER_INACTIVITY.getIndex())
+            setMaximumItemTransferInactivityTime(Integer.parseInt(text));
+        else if (textFieldID == TextFieldIds.MINIMUM_CART_WAIT_TIME.getIndex())
+            setMinimumCartWaitTime(Integer.parseInt(text));
+    }
+
+    @Override
+    public String getText(int textFieldID){
+        if (textFieldID == TextFieldIds.MAX_ITEM_TRANSFER_INACTIVITY.getIndex())
+            return Integer.toString(getMaximumItemTransferInactivityTime());
+        else if (textFieldID == TextFieldIds.MINIMUM_CART_WAIT_TIME.getIndex())
+            return Integer.toString(getMinimumCartWaitTime());
+        return null;
     }
 }

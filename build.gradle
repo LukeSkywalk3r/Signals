@@ -24,12 +24,13 @@ apply plugin: 'net.minecraftforge.gradle.forge'
 project.ext {
 	massive = "1"
     major = "4"
-    minor = "1"
+    minor = "2"
+    patch = "0"
     mcVersion = "1.12.2"
 }
 
 
-version = "${project.ext.massive}.${project.ext.major}.${project.minor}"
+version = "${project.ext.massive}.${project.ext.major}.${project.minor}.${project.patch}"
 group = "signals"
 archivesBaseName = "Signals"
 
@@ -60,7 +61,7 @@ dependencies {
 }
 
 minecraft {
-    version = "1.12.2-14.23.1.2577"
+    version = "1.12.2-14.23.5.2847"
     runDir = "eclipse"
     
     // the mappings can be changed at any time, and must be in the following format.
@@ -68,12 +69,13 @@ minecraft {
     // stable_#            stables are built at the discretion of the MCP team.
     // Use non-default mappings at your own risk. they may not allways work.
     // simply re-run your setup task after changing the mappings to update your workspace.
-    mappings = "snapshot_20170624"
+    mappings = "snapshot_20171003"
 
     // replacing stuff in the source
 	replace '@MASSIVE@', project.massive
     replace '@MAJOR@', project.major
     replace '@MINOR@', project.minor
+    replace '@PATCH@', project.patch
     replace '@MC_VERSION@', version
     if (System.getenv("BUILD_NUMBER") != null) {
         replace '@BUILD_NUMBER@', System.getenv("BUILD_NUMBER")

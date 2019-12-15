@@ -1,4 +1,5 @@
 ﻿
+#PARSE_ESCAPES
 tile.block_signal.name=Block Signal
 tile.path_signal.name=Path Signal
 tile.station_marker.name=Station Marker
@@ -88,6 +89,8 @@ signals.gui.cart_hopper.emitRedstoneWhen.cart_empty.tooltip=Emits as soon as the
 signals.gui.cart_hopper.interactWith=Interact with:
 signals.gui.cart_hopper.interactWith.cartInventory=Cart inventory
 signals.gui.cart_hopper.interactWith.cartEngine=Cart Engine
+signals.gui.cart_hopper.maximum_item_transfer_inactivity.tooltip=Time (in ms) to wait for external Item transfer.\r\nOnly enabled/useful when in 'No\u00A0activity' mode.
+signals.gui.cart_hopper.minimum_cart_wait_time.tooltip=Time (in ms) to hold the Minecart.\r\nUseful when in 'No\u00A0activity' mode.
 
 signals.gui.rail_link.holdDelay=Hold delay:
 signals.gui.rail_link.holdDelay.tooltip=How long a passing cart should be simulated as if it were still at the Rail Link.
